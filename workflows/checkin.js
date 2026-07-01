@@ -50,6 +50,156 @@ class GrowthTask extends Task {
   }
 }
 
+class DipLuckyTask extends Task {
+  taskName = "沾喜气";
+
+  dipStatus = -1;
+  dipValue = 0;
+  luckyValue = 0;
+
+  async run() {
+    const growth = this.juejin.growth();
+
+    // 掘金沾喜气功能以停用！
+    // const luckyusersResult = await growth.getLotteriesLuckyUsers();
+    // if (luckyusersResult.count > 0) {
+    //   const no1LuckyUser = luckyusersResult.lotteries[0];
+    //   const dipLuckyResult = await growth.dipLucky(no1LuckyUser.history_id);
+    //   if (dipLuckyResult.has_dip) {
+    //     this.dipStatus = 2;
+    //   } else {
+    //     this.dipStatus = 1;
+    //     this.dipValue = dipLuckyResult.dip_value;
+    //   }
+    // }
+
+    const luckyResult = await growth.getMyLucky();
+    this.luckyValue = luckyResult.total_value;
+  }
+}
+
+class BugfixTask extends Task {
+  taskName = "Bugfix";
+
+  bugStatus = -1;
+  collectBugCount = 0;
+  userOwnBug = 0;
+
+  async run() {
+    const bugfix = this.juejin.bugfix();
+
+    const competition = await bugfix.getCompetition();
+    const bugfixInfo = await bugfix.getUser(competition);
+    this.userOwnBug = bugfixInfo.user_own_bug;
+
+    // 掘金Bugfix功能已停用。
+    // try {
+    //   const notCollectBugList = await bugfix.getNotCollectBugList();
+    //   await bugfix.collectBugBatch(notCollectBugList);
+    //   this.bugStatus = 1;
+    //   this.collectBugCount = notCollectBugList.length;
+    //   this.userOwnBug += this.collectBugCount;
+    // } catch (e) {
+    //   this.bugStatus = 2;
+    // }
+  }
+}
+
+class LotteriesTask extends Task {
+  taskName = "抽奖";
+
+  lottery = []; // 奖池
+  pointCost = 0; // 一次抽奖消耗
+  freeCount = 0; // 免费抽奖次数
+  drawLotteryHistory = {};
+  lotteryCount = 0;
+  luckyValueProbability = 0;
+
+  async run(growthTask, dipLuckyTask) {
+    const growth = this.juejin.growth();
+
+    const lotteryConfig = await growth.getLotteryConfig();
+    this.lottery = lotteryConfig.lottery;
+    this.pointCost = lotteryConfig.point_cost;
+    this.freeCount = lotteryConfig.free_count;
+    this.lotteryCount = 0;
+
+    let freeCount = this.freeCount;
+    while (freeCount > 0) {
+      const result = await growth.drawLottery();
+      this.drawLotteryHistory[result.lottery_id] = (this.drawLotteryHistory[result.lottery_id] || 0) + 1;
+      dipLuckyTask.luckyValue = result.total_lucky_value;
+      freeCount--;
+      this.lotteryCount++;
+      await utils.wait(utils.randomRangeNumber(300, 1000));
+    }
+
+    growthTask.sumPoint = await growth.getCurrentPoint();
+
+    const getProbabilityOfWinning = sumPoint => {
+      const pointCost = this.pointCost;
+      const luckyValueCost = 10;
+      const totalDrawsNumber = sumPoint / pointCost;
+      let supplyPoint = 0;
+      for (let i = 0, length = Math.floor(totalDrawsNumber * 0.65); i < length; i++) {
+        supplyPoint += Math.ceil(Math.random() * 100);
+      }
+      const luckyValue = ((sumPoint + supplyPoint) / pointCost) * luckyValueCost + dipLuckyTask.luckyValue;
+      return luckyValue / 6000;
+    };
+
+    this.luckyValueProbability = getProbabilityOfWinning(growthTask.sumPoint);
+  }
+}
+
+class SdkTask extends Task {
+  taskName = "埋点";
+
+  calledSdkSetting = false;
+  calledTrackGrowthEvent = false;
+  calledTrackOnloadEvent = false;
+
+  async run() {
+    console.log("------事件埋点追踪-------");
+
+    const sdk = this.juejin.sdk();
+
+    try {
+      await sdk.slardarSDKSetting();
+      this.calledSdkSetting = true;
+    } catch {
+      this.calledSdkSetting = false;
+    }
+    console.log(`SDK状态: ${this.calledSdkSetting ? "加载成功" : "加载失败"}`);
+
+    try {
+      const result = await sdk.mockTrackGrowthEvent();
+      if (result && result.e === 0) {
+        this.calledTrackGrowthEvent = true;
+      } else {
+        throw result;
+      }
+    } catch {
+      this.calledTrackGrowthEvent = false;
+    }
+    console.log(`成长API事件埋点: ${this.calledTrackGrowthEvent ? "调用成功" : "调用失败"}`);
+
+    try {
+      const result = await sdk.mockTrackOnloadEvent();
+      if (result && result.e === 0) {
+        this.calledTrackOnloadEvent = true;
+      } else {
+        throw result;
+      }
+    } catch {
+      this.calledTrackOnloadEvent = false;
+    }
+    console.log(`OnLoad事件埋点: ${this.calledTrackOnloadEvent ? "调用成功" : "调用失败"}`);
+
+    console.log("-------------------------");
+  }
+}
+
 class MockVisitTask extends Task {
   taskName = "模拟访问";
 
@@ -99,11 +249,21 @@ class CheckIn {
 
     this.username = juejin.getUser().user_name;
 
-    this.mockVisitTask = new MockVisitTask(juejin);
     this.growthTask = new GrowthTask(juejin);
+    this.lotteriesTask = new LotteriesTask(juejin);
+    this.sdkTask = new SdkTask(juejin);
+    this.mockVisitTask = new MockVisitTask(juejin);
 
     await this.mockVisitTask.run();
+    await this.sdkTask.run();
+    console.log(`运行 ${this.growthTask.taskName}`);
     await this.growthTask.run();
+    // console.log(`运行 ${this.dipLuckyTask.taskName}`);
+    // await this.dipLuckyTask.run();
+    console.log(`运行 ${this.lotteriesTask.taskName}`);
+    await this.lotteriesTask.run(this.growthTask, null);
+    // console.log(`运行 ${this.bugfixTask.taskName}`);
+    // await this.bugfixTask.run();
     await juejin.logout();
     console.log("-------------------------");
 
@@ -111,6 +271,16 @@ class CheckIn {
   }
 
   toString() {
+    const drawLotteryHistory = Object.entries(this.lotteriesTask.drawLotteryHistory)
+      .map(([lottery_id, count]) => {
+        const lotteryItem = this.lotteriesTask.lottery.find(item => item.lottery_id === lottery_id);
+        if (lotteryItem) {
+          return `${lotteryItem.lottery_name}: ${count}`;
+        }
+        return `${lottery_id}: ${count}`;
+      })
+      .join("\n");
+
     return `
 掘友: ${this.username}
 ${
@@ -123,6 +293,10 @@ ${
 连续签到天数 ${this.growthTask.contCount}
 累计签到天数 ${this.growthTask.sumCount}
 当前矿石数 ${this.growthTask.sumPoint}
+预测All In矿石累计幸运值比率 ${(this.lotteriesTask.luckyValueProbability * 100).toFixed(2) + "%"}
+抽奖总次数 ${this.lotteriesTask.lotteryCount}
+免费抽奖次数 ${this.lotteriesTask.freeCount}
+${this.lotteriesTask.lotteryCount > 0 ? "==============\n" + drawLotteryHistory + "\n==============" : ""}
 `.trim();
   }
 }
