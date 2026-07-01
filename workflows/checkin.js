@@ -43,6 +43,10 @@ class GrowthTask extends Task {
     const counts = await growth.getCounts();
     this.contCount = counts.cont_count;
     this.sumCount = counts.sum_count;
+
+    if (!this.sumPoint) {
+      this.sumPoint = await growth.getCurrentPoint();
+    }
   }
 }
 
